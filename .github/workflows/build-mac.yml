@@ -1,0 +1,96 @@
+name: Mac-Build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Neuen Code aus Dropbox holen (falls vorhanden)
+        run: |
+          set -e
+          if [ -f import/url.txt ]; then
+            curl -sSfL "$(cat import/url.txt)" -o /tmp/src.tgz
+            echo "$(cat import/sha256.txt)  /tmp/src.tgz" | sha256sum -c -
+            tar xzf /tmp/src.tgz
+            git rm -rq import
+            git config user.name 'seimendexter-source'
+            git config user.email 'seimendexter-source@users.noreply.github.com'
+            git add -A
+            git commit -m "Code-Update aus Dropbox"
+            git push
+          fi
+
+  build:
+    needs: sync
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Pruefen ob Code da ist
+        id: check
+        run: |
+          if [ -f CMakeLists.txt ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Konfigurieren
+        if: steps.check.outputs.ok == 'true'
+        run: |
+          set -o pipefail
+          cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 2>&1 | tee build.log
+
+      - name: Bauen
+        if: steps.check.outputs.ok == 'true'
+        run: |
+          set -o pipefail
+          cmake --build build --config Release --target SDKickMaker_AU SDKickMaker_VST3 -- -quiet 2>&1 | tee -a build.log
+
+      - name: Signieren und packen
+        if: steps.check.outputs.ok == 'true'
+        run: |
+          set -e
+          ART="build/SDKickMaker_artefacts/Release"
+          codesign --force --deep --sign - "$ART/AU/SD KICK MAKER.component"
+          codesign --force --deep --sign - "$ART/VST3/SD KICK MAKER.vst3"
+          mkdir -p dist/SD_KICK_MAKER
+          cp -R "$ART/AU/SD KICK MAKER.component" dist/SD_KICK_MAKER/
+          cp -R "$ART/VST3/SD KICK MAKER.vst3" dist/SD_KICK_MAKER/
+          cp LIESMICH.txt dist/SD_KICK_MAKER/
+          cd dist && ditto -c -k --sequesterRsrc --keepParent SD_KICK_MAKER "SD_KICK_MAKER_v0.1.${{ github.run_number }}_Mac.zip"
+
+      - name: AU-Test
+        if: steps.check.outputs.ok == 'true'
+        continue-on-error: true
+        run: |
+          echo "Build ${{ github.run_number }}" > auval.txt
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/SDKickMaker_artefacts/Release/AU/SD KICK MAKER.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          sleep 3
+          if auval -v aumu SdKk SDxt > auval_full.txt 2>&1; then echo "AU-Test: BESTANDEN" >> auval.txt; else echo "AU-Test: FEHLER" >> auval.txt; tail -n 40 auval_full.txt >> auval.txt; fi
+
+      - name: Release erstellen
+        if: steps.check.outputs.ok == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.${{ github.run_number }}
+          name: SD KICK MAKER v0.1.${{ github.run_number }}
+          body_path: auval.txt
+          files: dist/SD_KICK_MAKER_v0.1.${{ github.run_number }}_Mac.zip
+
+      - name: Fehlerbericht
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "Build ${{ github.run_number }} fehlgeschlagen:"; echo '```'; grep -iE "error|fatal" build.log | head -n 60 || true; echo '---'; tail -n 80 build.log || true; echo '```'; } > issue.md
+          gh issue create --title "Build ${{ github.run_number }} fehlgeschlagen" --body-file issue.md
