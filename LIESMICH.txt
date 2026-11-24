@@ -1,0 +1,23 @@
+SD KICK MAKER – Installation auf dem Mac
+========================================
+
+1. Im Download findest du zwei Dateien:
+   - "SD KICK MAKER.component"  (AU)
+   - "SD KICK MAKER.vst3"       (VST3)
+
+2. Finder öffnen -> oben im Menü "Gehe zu" -> "Gehe zu Ordner ..." (Shift+Cmd+G)
+   und diesen Pfad eingeben:   ~/Library/Audio/Plug-Ins
+
+3. "SD KICK MAKER.component" in den Ordner "Components" ziehen,
+   "SD KICK MAKER.vst3" in den Ordner "VST3".
+
+4. Ableton neu starten. Falls das Plugin nicht auftaucht:
+   Ableton -> Einstellungen -> Plug-Ins -> "Erneut scannen".
+
+5. Das Plugin ist ein Instrument: auf eine MIDI-Spur ziehen und Noten
+   (z. B. C1) auf jede Viertel setzen – oder oben auf PLAY drücken.
+
+Wenn macOS meldet, das Plugin sei "beschädigt" oder "nicht verifiziert":
+Systemeinstellungen -> Datenschutz & Sicherheit -> ganz unten "Trotzdem erlauben".
+
+Seimen Dexter

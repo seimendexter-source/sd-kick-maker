@@ -1,0 +1,4 @@
+build/
+JUCE/
+testout/
+*.DS_Store
