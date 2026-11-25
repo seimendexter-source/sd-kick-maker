@@ -87,10 +87,16 @@ void KickVoice::start (const KickParams& p, float velocity, std::shared_ptr<cons
 
     f0 = p.fundamentalHz();
     fStart = f0 * std::pow (2.0, 1.0 + p.punch * 4.6);                 // bis ca. 2 kHz
-    tauPitch = (0.002 + 0.018 * p.body) * (1.2 - 0.6 * p.punch);
+    // Click-Grenze (Standard 0,25) streckt/staucht Pitch-Sweep und Klick
+    const double clickScale = juce::jlimit (0.2, 1.8, (double) p.clickSplit / 0.25);
+    tauPitch = (0.002 + 0.018 * p.body) * (1.2 - 0.6 * p.punch) * clickScale;
+    clickTau = (float) (0.0011 * clickScale);
+    polarity = (p.sampleMode && p.phaseInvert) ? -1.0f : 1.0f;
 
+    // Body-Grenze (Standard 0,65) verschiebt das Ende des Körpers
+    const double bodyScale = juce::jlimit (0.75, 1.4, (double) p.bodySplit / 0.65);
     lenSec  = p.lengthSeconds();
-    holdSec = lenSec * (0.04 + 0.5 * p.body);
+    holdSec = juce::jmin (lenSec * 0.9, lenSec * (0.04 + 0.5 * p.body) * bodyScale);
     curve   = 1.1 + 2.6 * (1.0 - p.body);
 
     noiseHpState = noisePrev = 0.0f;
@@ -124,9 +130,10 @@ void KickVoice::release()
     if (active) releasing = true;
 }
 
-float KickVoice::next (float& env)
+float KickVoice::next (float& env, float& dry)
 {
     env = 0.0f;
+    dry = 0.0f;
     if (! active)
         return 0.0f;
 
@@ -163,8 +170,9 @@ float KickVoice::next (float& env)
         const float nz = rng.nextFloat() * 2.0f - 1.0f;
         noiseHpState = 0.6f * (noiseHpState + nz - noisePrev);
         noisePrev = nz;
-        const float clickEnv = (float) std::exp (-ts / 0.0011);
+        const float clickEnv = (float) std::exp (-ts / clickTau);
         s += punch * 0.55f * clickEnv * noiseHpState;
+        dry = s * (float) a * vel;
     }
     else
     {
@@ -174,8 +182,9 @@ float KickVoice::next (float& env)
         if (i0 + 1 >= len) { active = false; return 0.0f; }
         const float frac = (float) (samplePos - i0);
         const float* d = buf.getReadPointer (0);
-        s = d[i0] + frac * (d[i0 + 1] - d[i0]);
+        s = (d[i0] + frac * (d[i0 + 1] - d[i0])) * polarity;
         samplePos += sampleStep;
+        dry = s * vel;   // Original-Sample, unbearbeitet
 
         // Punch = Transient-Verstärkung
         s *= 1.0f + punch * 2.2f * (float) std::exp (-ts / 0.006);
@@ -192,7 +201,7 @@ float KickVoice::next (float& env)
 KickEngine::KickEngine()
 {
     oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
-        1, 2, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, false);
+        1, 2, juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple, true, true);
 }
 
 void KickEngine::prepare (double sampleRate, int maxBlockSize)
@@ -204,7 +213,10 @@ void KickEngine::prepare (double sampleRate, int maxBlockSize)
 
     work.setSize (1, maxBlock, false, true, true);
     envBuf.setSize (1, maxBlock, false, true, true);
+    dryBuf.setSize (1, maxBlock, false, true, true);
     oversampler->initProcessing ((size_t) maxBlock);
+    dryDelay.assign ((size_t) juce::jmax (1, getLatencySamples() + 1), 0.0f);
+    dryDelayPos = 0;
 
     // Rumble-Netz: Längen leicht teilerfremd
     const double ms[numLines] = { 31.3, 37.9, 43.7, 53.1 };
@@ -222,6 +234,8 @@ void KickEngine::prepare (double sampleRate, int maxBlockSize)
 
     outGain.reset (sr, 0.02);
     outGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (params.outputDb));
+    wetMix.reset (sr, 0.02);
+    wetMix.setCurrentAndTargetValue (params.dryWet);
 
     reset();
 }
@@ -238,6 +252,9 @@ void KickEngine::reset()
     }
     rumbleLp1.reset(); rumbleLp2.reset(); rumbleHp.reset();
     duckSmooth = 0.0f;
+    std::fill (dryDelay.begin(), dryDelay.end(), 0.0f);
+    dryDelayPos = 0;
+    samplesSinceTrigger = 1 << 30;
 }
 
 int KickEngine::getLatencySamples() const
@@ -250,6 +267,7 @@ void KickEngine::trigger (float velocity)
     voices[(size_t) currentVoice].release();
     currentVoice = 1 - currentVoice;
     voices[(size_t) currentVoice].start (params, velocity, getSample());
+    samplesSinceTrigger = 0;
 }
 
 void KickEngine::process (float* out, int n)
@@ -257,13 +275,20 @@ void KickEngine::process (float* out, int n)
     jassert (n <= maxBlock);
     float* w = work.getWritePointer (0);
     float* e = envBuf.getWritePointer (0);
+    float* dr = dryBuf.getWritePointer (0);
 
-    // 1) Stimmen erzeugen
+    // 1) Stimmen erzeugen (bearbeiteter Zweig + unbearbeiteter Dry-Zweig)
     for (int i = 0; i < n; ++i)
     {
-        float e0 = 0.0f, e1 = 0.0f;
-        w[i] = voices[0].next (e0) + voices[1].next (e1);
+        float e0 = 0.0f, e1 = 0.0f, d0 = 0.0f, d1 = 0.0f;
+        w[i] = voices[0].next (e0, d0) + voices[1].next (e1, d1);
         e[i] = juce::jmax (e0, e1);
+
+        // Dry um die Oversampling-Latenz verzögern -> phasengleich mit Wet
+        const float dIn = d0 + d1;
+        dr[i] = dryDelay[(size_t) dryDelayPos];
+        dryDelay[(size_t) dryDelayPos] = dIn;
+        if (++dryDelayPos >= (int) dryDelay.size()) dryDelayPos = 0;
     }
 
     // 2) Verzerrung in 4-facher Überabtastung
@@ -315,6 +340,9 @@ void KickEngine::process (float* out, int n)
         const float rDrive = 1.5f + 6.0f * rumble;
         const float rNorm = 1.0f / std::tanh (rDrive * 0.5f);
         const float duckA = (float) std::exp (-1.0 / (0.012 * sr));
+        const double beat = params.beatSeconds() * sr;
+        const double gateStart = juce::jmax (0.0, (double) params.bodySplit - 0.08) * beat;
+        const double gateLen = 0.08 * beat;
 
         for (int i = 0; i < n; ++i)
         {
@@ -347,20 +375,30 @@ void KickEngine::process (float* out, int n)
             duckSmooth = target > duckSmooth ? target : target + duckA * (duckSmooth - target);
             const float duck = (1.0f - duckSmooth) * (1.0f - duckSmooth);
 
-            w[i] += r * duck * rumble * 0.55f;
+            // Tail/Rumble-Bereich beginnt an der Body-Grenze
+            const double since = (double) (samplesSinceTrigger + i);
+            const float gate = (float) juce::jlimit (0.0, 1.0, (since - gateStart) / gateLen);
+
+            w[i] += r * duck * gate * rumble * 0.55f;
         }
     }
+    samplesSinceTrigger += n;
 
-    // 5) Ausgang + Schutzbegrenzer
+    // 5) Dry/Wet, Ausgang + Schutzbegrenzer
     outGain.setTargetValue (juce::Decibels::decibelsToGain (params.outputDb));
+    wetMix.setTargetValue (juce::jlimit (0.0f, 1.0f, params.dryWet));
+    float prePeak = 0.0f;
     for (int i = 0; i < n; ++i)
     {
-        float y = w[i] * outGain.getNextValue();
+        const float m = wetMix.getNextValue();
+        float y = (w[i] * m + dr[i] * (1.0f - m)) * outGain.getNextValue();
         const float ay = std::abs (y);
+        prePeak = juce::jmax (prePeak, ay);
         if (ay > 0.9f)
             y = std::copysign (0.9f + 0.09f * std::tanh ((ay - 0.9f) / 0.09f), y);
         out[i] = y;
     }
+    lastPrePeak = prePeak;
 }
 
 std::vector<float> KickEngine::renderOneShot (const KickParams& p,

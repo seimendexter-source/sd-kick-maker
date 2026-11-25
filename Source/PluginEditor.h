@@ -13,6 +13,7 @@ namespace sdcol
     const juce::Colour red      { 0xffd6302c };
     const juce::Colour text     { 0xffe8e8e8 };
     const juce::Colour dim      { 0xff8a8a8a };
+    const juce::Colour group    { 0xff222222 };
 }
 
 struct SDFonts
@@ -39,34 +40,68 @@ private:
     const SDFonts& fonts;
 };
 
-class WaveDisplay : public juce::Component
+// Große Wellenform: Datei-Drop-Ziel + zwei verschiebbare Grenzen (Click | Body | Tail)
+class WaveDisplay : public juce::Component, public juce::FileDragAndDropTarget
 {
 public:
-    explicit WaveDisplay (const SDFonts& f) : fonts (f) {}
+    WaveDisplay (SDKickMakerProcessor& p, const SDFonts& f);
     void setData (const std::vector<float>& d, double lengthSec);
     void paint (juce::Graphics&) override;
-private:
-    const SDFonts& fonts;
-    std::vector<float> data;
-    double seconds = 0.0;
-};
 
-class SampleDrop : public juce::Component, public juce::FileDragAndDropTarget
-{
-public:
-    SampleDrop (SDKickMakerProcessor& p, const SDFonts& f) : proc (p), fonts (f) {}
-    void paint (juce::Graphics&) override;
-    bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void fileDragEnter (const juce::StringArray&, int, int) override { hover = true; repaint(); }
     void fileDragExit (const juce::StringArray&) override { hover = false; repaint(); }
     void filesDropped (const juce::StringArray& files, int, int) override;
+
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    juce::Rectangle<float> plotArea() const;
+    float xForSplit (float v) const;
+    float splitForX (float x) const;
+    float splitValue (const char* id) const;
+    int handleAt (juce::Point<float> pos) const;
+
+    SDKickMakerProcessor& proc;
+    const SDFonts& fonts;
+    std::vector<float> data;
+    double seconds = 0.0;
+    bool hover = false;
+    int dragging = -1;   // 0 = clickSplit, 1 = bodySplit
+};
+
+// Kompakte Sample-Leiste: Dateiname, X (entladen), Ø (Phase)
+class SampleDrop : public juce::Component
+{
+public:
+    SampleDrop (SDKickMakerProcessor& p, const SDFonts& f);
+    void paint (juce::Graphics&) override;
+    void resized() override;
     void mouseUp (const juce::MouseEvent&) override;
     juce::String info;
 private:
+    juce::Rectangle<int> nameArea() const;
     SDKickMakerProcessor& proc;
     const SDFonts& fonts;
-    bool hover = false;
     std::unique_ptr<juce::FileChooser> chooser;
+    juce::TextButton clearBtn { "X" };
+    juce::TextButton phaseBtn { juce::String::fromUTF8 ("\xc3\x98") };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> phaseAtt;
+};
+
+// Button mit kleinem Vektor-Symbol (Play-Dreieck / Würfel)
+class IconButton : public juce::TextButton
+{
+public:
+    enum class Icon { none, play, dice };
+    IconButton (const juce::String& buttonText, Icon i, const SDFonts& f) : juce::TextButton (buttonText), icon (i), fonts (f) {}
+    void paintButton (juce::Graphics&, bool over, bool down) override;
+private:
+    Icon icon;
+    const SDFonts& fonts;
 };
 
 class SDKickMakerEditor : public juce::AudioProcessorEditor, private juce::Timer
@@ -77,11 +112,13 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
 
 private:
     void timerCallback() override;
     void refreshWave();
     juce::String paramsHash() const;
+    juce::Rectangle<float> meterBounds() const;
 
     SDKickMakerProcessor& proc;
     SDFonts fonts;
@@ -95,17 +132,25 @@ private:
     std::array<Knob, 6> knobs;
     juce::Slider outKnob;
     std::unique_ptr<SA> outAtt;
+    juce::Slider dryWetKnob;
+    std::unique_ptr<SA> dryWetAtt;
 
     juce::ComboBox presetBox, keyBox, modeBox;
     std::unique_ptr<CA> keyAtt, modeAtt;
 
-    juce::TextButton playBtn { "PLAY" }, exportBtn { "EXPORT WAV" }, abBtn { "A" };
-    WaveDisplay wave { fonts };
+    IconButton playBtn { "PLAY", IconButton::Icon::play, fonts };
+    juce::TextButton exportBtn { "EXPORT WAV" };
+    IconButton abBtn { "A/B", IconButton::Icon::none, fonts };
+    IconButton randomBtn { "RANDOM", IconButton::Icon::dice, fonts };
+    WaveDisplay wave;
     SampleDrop drop;
+
+    std::array<juce::Rectangle<int>, 3> groupBounds;
 
     juce::String lastHash;
     int waveCountdown = 0;
     float meterDb = -60.0f;
+    bool clipLed = false;
     std::unique_ptr<juce::FileChooser> saveChooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SDKickMakerEditor)

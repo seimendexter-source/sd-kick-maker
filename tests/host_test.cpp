@@ -21,7 +21,15 @@ int main(){
   std::cout<<"restore rumble="<<p2->currentParams().rumble<<" mode="<<p2->currentParams().sampleMode<<" info="<<p2->getSampleInfo()<<"\n";
   proc->toggleAB(); proc->loadPreset(2); proc->toggleAB(); std::cout<<"AB back to A rumble="<<proc->currentParams().rumble<<" onB="<<proc->isOnB()<<"\n";
   std::cout<<"export="<<proc->exportWav(juce::File("/home/claude/sdkick/testout/EXPORT.wav"))<<"\n";
-  proc->clearSample(); proc->apvts.getParameter("mode")->setValueNotifyingHost(0); proc->loadPreset(0);
+  proc->randomizeParameters(); auto rp=proc->currentParams(); std::cout<<"random punch="<<rp.punch<<" drive="<<rp.drive<<" tune="<<rp.tune<<" out="<<rp.outputDb<<" dw="<<rp.dryWet<<"\n";
+  // dry/wet 0 in sample mode with phase invert -> output should equal inverted sample (approx)
+  proc->apvts.getParameter("dryWet")->setValueNotifyingHost(0.0f); proc->apvts.getParameter("phaseInvert")->setValueNotifyingHost(1.0f);
+  { auto p=proc->currentParams(); auto d=KickEngine::renderOneShot(p,proc->getSamplePtr(),44100,0.3); float mx=0,mn=0; for(float x:d){mx=std::max(mx,x);mn=std::min(mn,x);} std::cout<<"dry-only inverted max="<<mx<<" min="<<mn<<"\n"; }
+  proc->apvts.getParameter("dryWet")->setValueNotifyingHost(1.0f); proc->apvts.getParameter("phaseInvert")->setValueNotifyingHost(0.0f);
+  proc->apvts.getParameter("output")->setValueNotifyingHost(1.0f);
+  { juce::AudioBuffer<float> b2(2,480); juce::MidiBuffer m2; m2.addEvent(juce::MidiMessage::noteOn(1,36,(juce::uint8)127),0); proc->processBlock(b2,m2); std::cout<<"clip flag (out +6dB)="<<proc->isClipped()<<"\n"; proc->resetClip(); }
+  proc->apvts.getParameter("output")->setValueNotifyingHost(proc->apvts.getParameter("output")->convertTo0to1(-3.0f));
+  proc->loadPreset(0);
   { std::unique_ptr<juce::AudioProcessorEditor> ed(proc->createEditor()); ed->setVisible(true);
     for(int i=0;i<10;i++) juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
     auto img=ed->createComponentSnapshot(ed->getLocalBounds(),true,2.0f);

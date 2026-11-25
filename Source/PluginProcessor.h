@@ -56,6 +56,12 @@ public:
     void toggleAB();
     bool isOnB() const { return abIsB; }
 
+    void randomizeParameters();
+    juce::String getSampleName() const;
+
+    bool isClipped() const { return clipFlag.load(); }
+    void resetClip() { clipFlag = false; }
+
     float getAndResetPeak() { return peak.exchange (0.0f); }
     double getHostBpm() const { return hostBpm.load(); }
 
@@ -68,6 +74,8 @@ private:
     std::atomic<bool> previewRequested { false };
     std::atomic<float> peak { 0.0f };
     std::atomic<double> hostBpm { 160.0 };
+    std::atomic<bool> clipFlag { false };
+    juce::Random random;
     juce::String samplePath;
 
     juce::ValueTree abSlot[2];

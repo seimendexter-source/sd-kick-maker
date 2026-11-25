@@ -23,6 +23,10 @@ struct KickParams
     float rumble     = 0.0f;   // 0 ... 1
     float outputDb   = 0.0f;   // dB
     double bpm       = 160.0;
+    float dryWet     = 1.0f;   // 0 = nur Original, 1 = nur bearbeitet
+    float clickSplit = 0.25f;  // Grenze Click/Body (Anteil eines Beats)
+    float bodySplit  = 0.65f;  // Grenze Body/Tail (Anteil eines Beats)
+    bool  phaseInvert = false; // Sample-Phase drehen
 
     // Grundton der Kick in Hz (Oktave 1, z. B. F#1 = 46,2 Hz)
     double fundamentalHz() const
@@ -55,8 +59,9 @@ public:
     void release();                                // schnelles Ausblenden (Retrigger)
     bool isActive() const { return active; }
 
-    // ein Sample erzeugen; env bekommt die aktuelle Hüllkurve (für Rumble-Ducking)
-    float next (float& env);
+    // ein Sample erzeugen; env bekommt die aktuelle Hüllkurve (für Rumble-Ducking),
+    // dry das unbearbeitete Signal (Original-Sample bzw. roher Synth)
+    float next (float& env, float& dry);
 
 private:
     double sampleRate = 44100.0;
@@ -70,6 +75,8 @@ private:
     double f0 = 46.0, fStart = 1000.0, tauPitch = 0.02;
     double lenSec = 0.3, holdSec = 0.05, curve = 2.0;
     float  punch = 0.5f, vel = 1.0f;
+    float  clickTau = 0.0011f;
+    float  polarity = 1.0f;
     bool   useSample = false;
 
     // Klick
@@ -112,7 +119,10 @@ private:
     std::array<KickVoice, 2> voices;
     int currentVoice = 0;
 
-    juce::AudioBuffer<float> work, envBuf;
+    juce::AudioBuffer<float> work, envBuf, dryBuf;
+    std::vector<float> dryDelay;
+    int dryDelayPos = 0;
+    long long samplesSinceTrigger = 1 << 30;
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
 
     // Nachbearbeitung
@@ -129,4 +139,10 @@ private:
 
     // Ausgang
     juce::SmoothedValue<float> outGain;
+    juce::SmoothedValue<float> wetMix;
+    float lastPrePeak = 0.0f;
+
+public:
+    // Spitzenpegel vor dem Schutzbegrenzer im letzten process()-Aufruf (für die Clip-LED)
+    float getLastPrePeak() const { return lastPrePeak; }
 };

@@ -42,6 +42,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout SDKickMakerProcessor::create
         NormalisableRange<float> (-24.0f, 6.0f, 0.1f), -3.0f,
         AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int)
             { return String (v, 1) + " dB"; })));
+    ps.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "dryWet", 1 }, "Dry/Wet",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f,
+        AudioParameterFloatAttributes().withLabel (" %").withStringFromValueFunction ([] (float v, int)
+            { return String (roundToInt (v)) + " %"; })));
+    ps.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "clickSplit", 1 }, "Click-Grenze",
+        NormalisableRange<float> (0.05f, 0.45f), 0.25f));
+    ps.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "bodySplit", 1 }, "Body-Grenze",
+        NormalisableRange<float> (0.50f, 0.90f), 0.65f));
+    ps.push_back (std::make_unique<AudioParameterBool> (ParameterID { "phaseInvert", 1 }, "Phase invertieren", false));
 
     return { ps.begin(), ps.end() };
 }
@@ -73,6 +82,10 @@ KickParams SDKickMakerProcessor::currentParams() const
     p.rumble   = v ("rumble");
     p.outputDb = v ("output");
     p.bpm      = hostBpm.load();
+    p.dryWet      = v ("dryWet") / 100.0f;
+    p.clickSplit  = v ("clickSplit");
+    p.bodySplit   = v ("bodySplit");
+    p.phaseInvert = v ("phaseInvert") > 0.5f;
     return p;
 }
 
@@ -107,6 +120,8 @@ void SDKickMakerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         {
             const int chunk = juce::jmin (end - pos, engineBlock);
             engine.process (monoBuf.data(), chunk);
+            if (engine.getLastPrePeak() > 1.0f)
+                clipFlag = true;
             for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
                 buffer.copyFrom (ch, pos, monoBuf.data(), chunk);
             pos += chunk;
@@ -212,6 +227,32 @@ void SDKickMakerProcessor::toggleAB()
     const int nxt = abIsB ? 1 : 0;
     if (abSlot[nxt].isValid())
         apvts.replaceState (abSlot[nxt].createCopy());
+}
+
+void SDKickMakerProcessor::randomizeParameters()
+{
+    // musikalisch sinnvolle Bereiche; OUTPUT, DRY/WET, TUNE und TONART bleiben unangetastet
+    auto set = [this] (const char* id, float lo, float hi)
+    {
+        if (auto* prm = apvts.getParameter (id))
+        {
+            const float v = lo + random.nextFloat() * (hi - lo);
+            prm->beginChangeGesture();
+            prm->setValueNotifyingHost (prm->convertTo0to1 (v));
+            prm->endChangeGesture();
+        }
+    };
+    set ("punch",  0.40f, 0.95f);
+    set ("body",   0.30f, 0.80f);
+    set ("length", 0.25f, 0.75f);
+    set ("drive",  0.20f, 0.90f);
+    set ("rumble", 0.00f, 0.60f);
+}
+
+juce::String SDKickMakerProcessor::getSampleName() const
+{
+    auto s = engine.getSample();
+    return s != nullptr ? s->name : juce::String();
 }
 
 bool SDKickMakerProcessor::exportWav (const juce::File& f)
