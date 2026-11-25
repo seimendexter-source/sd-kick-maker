@@ -341,8 +341,11 @@ void KickEngine::process (float* out, int n)
         const float rNorm = 1.0f / std::tanh (rDrive * 0.5f);
         const float duckA = (float) std::exp (-1.0 / (0.012 * sr));
         const double beat = params.beatSeconds() * sr;
-        const double gateStart = juce::jmax (0.0, (double) params.bodySplit - 0.08) * beat;
+        // Body-Grenze bis zur Standardposition (0,65) = Rumble wie gehabt (nur Ducking);
+        // weiter rechts setzt der Rumble später ein, bis zur Linie
+        const double shift = juce::jlimit (0.0, 1.0, ((double) params.bodySplit - 0.65) / 0.25);
         const double gateLen = 0.08 * beat;
+        const double gateStart = shift * ((double) params.bodySplit * beat - gateLen) - (1.0 - shift) * gateLen;
 
         for (int i = 0; i < n; ++i)
         {
